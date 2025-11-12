@@ -8,9 +8,10 @@ This document provides guidance for AI coding agents working on this project.
 - **Runtime:** Bun (also used for package management)
 - **Framework:** Hono (lightweight web framework)
 - **Effect System:** EffectTS (functional programming, error handling, DI)
+- **Database:** PostgreSQL with Drizzle ORM (type-safe queries and migrations)
 - **Language:** TypeScript
 
-**Purpose:** A REST API template demonstrating best practices for combining Hono with EffectTS.
+**Purpose:** A REST API template demonstrating best practices for combining Hono with EffectTS and PostgreSQL.
 
 ## Architecture Patterns
 
@@ -102,9 +103,14 @@ src/
 ├── index.ts                 # Main app: Hono routes, runtime, server setup
 ├── types.ts                 # TypeScript interfaces and types
 ├── errors.ts                # Effect tagged errors
+├── db/
+│   ├── schema.ts            # Drizzle ORM schema definitions
+│   ├── connection.ts        # Database connection setup
+│   └── migrate.ts           # Migration runner script
 └── services/
-    ├── UserService.ts       # User service with business logic
-    └── PostService.ts       # Post service with business logic
+    ├── DatabaseService.ts   # Database connection service (Effect layer)
+    ├── UserService.ts       # User service with Drizzle operations
+    └── PostService.ts       # Post service with Drizzle operations
 ```
 
 ### File Responsibilities
@@ -126,11 +132,35 @@ src/
 - One error class per error type
 - Include relevant context fields
 
+**src/db/schema.ts:**
+- Drizzle ORM table definitions
+- Database schema with types
+- Table relationships
+- Type exports for services
+
+**src/db/connection.ts:**
+- PostgreSQL client creation
+- Drizzle instance setup
+- Connection configuration
+- Type exports for DrizzleDb
+
+**src/db/migrate.ts:**
+- Migration runner script
+- Applies pending migrations
+- Used in deployment setup
+
+**src/services/DatabaseService.ts:**
+- Database connection Effect service
+- Manages connection lifecycle
+- Provides DrizzleDb instance
+- Handles cleanup on scope end
+
 **src/services/[Service].ts:**
 - Service interface using `Context.Tag`
 - Service implementation class
 - Service layer for DI
 - All business logic returns `Effect` types
+- Database operations using Drizzle ORM
 
 ## Key Concepts for AI Agents
 
@@ -166,16 +196,22 @@ const program = Effect.gen(function* () {
 The current implementation uses a single runtime:
 
 ```typescript
-// Create runtime once at app startup
+// Create runtime once at app startup with layered dependencies
+// PostService depends on UserService, both depend on DatabaseService
 const runtime = Effect.runSync(
   Effect.scoped(
-    Runtime.make(Layer.merge(UserServiceLiveLayer, PostServiceLiveLayer))
+    Runtime.make(
+      Layer.provide(
+        Layer.merge(UserServiceLive, PostServiceLive),
+        DatabaseServiceLive
+      )
+    )
   )
 );
 
 // Helper to run programs
 async function runEffect<A, E>(
-  effect: Effect.Effect<A, E, UserService | PostService>
+  effect: Effect.Effect<A, E, UserService | PostService | DatabaseService>
 ) {
   const result = await Runtime.runPromiseEither(runtime)(effect);
   // Returns Either type for error handling
@@ -198,11 +234,16 @@ readonly create: (input: CreatePostInput) =>
 ## Development Commands
 
 ```bash
-bun install          # Install dependencies
-bun run dev          # Development with auto-reload
-bun run start        # Production mode
-bun run build        # Build project
-bun run typecheck    # Type checking
+bun install            # Install dependencies
+bun run dev            # Development with auto-reload
+bun run start          # Production mode
+bun run build          # Build project
+bun run typecheck      # Type checking
+
+# Database commands
+bun run db:generate    # Generate migration files from schema
+bun run db:migrate     # Run pending migrations
+bun run db:studio      # Open Drizzle Studio (database GUI)
 ```
 
 ## Adding New Features
@@ -236,16 +277,31 @@ bun run typecheck    # Type checking
    export const ResourceServiceLiveLayer = Layer.sync(/* ... */);
    ```
 
-4. **Update runtime** in `src/index.ts`:
+4. **Create service layer** (depends on DatabaseService if needed):
+   ```typescript
+   export const ResourceServiceLive = Layer.effect(
+     ResourceService,
+     Effect.gen(function* () {
+       yield* DatabaseService;  // If database access needed
+       const service = new ResourceServiceLive();
+       return { /* service methods */ };
+     })
+   );
+   ```
+
+5. **Update runtime** in `src/index.ts`:
    ```typescript
    const runtime = Effect.runSync(
      Effect.scoped(Runtime.make(
-       Layer.mergeAll(UserServiceLiveLayer, PostServiceLiveLayer, ResourceServiceLiveLayer)
+       Layer.provide(
+         Layer.mergeAll(UserServiceLive, PostServiceLive, ResourceServiceLive),
+         DatabaseServiceLive
+       )
      ))
    );
    ```
 
-5. **Add routes** in `src/index.ts` following the pattern above
+6. **Add routes** in `src/index.ts` following the pattern above
 
 ### Adding a New Endpoint
 
@@ -364,28 +420,53 @@ describe("UserService", () => {
 
 ### Database Integration
 
-Replace in-memory storage:
+**Current Implementation:** PostgreSQL with Drizzle ORM
+
+The project uses Drizzle ORM for type-safe database operations:
 
 ```typescript
+// Service accesses database through DatabaseService
 class UserServiceLive {
-  constructor(private db: DatabaseConnection) {}
-
   getById = (id: string) =>
-    Effect.gen(this, function* () {
-      // Use Effect.tryPromise for async operations
-      const user = yield* Effect.tryPromise({
-        try: () => this.db.query("SELECT * FROM users WHERE id = ?", [id]),
-        catch: (error) => new DatabaseError({ message: String(error) })
-      });
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseService;  // Get Drizzle instance
 
-      if (!user) {
+      const numId = parseInt(id, 10);
+      if (isNaN(numId)) {
         return yield* Effect.fail(new UserNotFoundError({ id }));
       }
 
-      return user;
+      // Use Effect.tryPromise for async Drizzle operations
+      const result = yield* Effect.tryPromise({
+        try: () => db.select().from(users).where(eq(users.id, numId)).limit(1),
+        catch: (error) => new DatabaseError({ message: String(error) })
+      });
+
+      const dbUser = result[0];
+      if (!dbUser) {
+        return yield* Effect.fail(new UserNotFoundError({ id }));
+      }
+
+      // Map database types to domain types
+      return {
+        id: dbUser.id.toString(),
+        username: dbUser.username,
+        email: dbUser.email,
+        displayName: dbUser.displayName,
+        bio: dbUser.bio ?? undefined,
+        createdAt: dbUser.createdAt,
+        updatedAt: dbUser.updatedAt,
+      };
     });
 }
 ```
+
+**Key Patterns:**
+- Services depend on `DatabaseService` via Effect layers
+- Database operations wrapped in `Effect.tryPromise`
+- Drizzle provides end-to-end type safety
+- Database types mapped to domain types
+- Connection lifecycle managed by DatabaseService
 
 ### Authentication
 

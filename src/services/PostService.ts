@@ -1,61 +1,122 @@
 import { Context, Effect, Layer } from "effect";
+import { eq, desc } from "drizzle-orm";
 import type { Post, CreatePostInput, UpdatePostInput } from "../types";
 import {
   PostNotFoundError,
   ValidationError,
   UserNotFoundError,
+  DatabaseError,
 } from "../errors";
+import { DatabaseService } from "./DatabaseService";
 import { UserService } from "./UserService";
+import { posts } from "../db/schema";
 
 // Define the service interface
 export class PostService extends Context.Tag("PostService")<
   PostService,
   {
-    readonly getAll: Effect.Effect<Array<Post>, never>;
-    readonly getById: (id: string) => Effect.Effect<Post, PostNotFoundError>;
-    readonly getByUserId: (userId: string) => Effect.Effect<Array<Post>, never>;
+    readonly getAll: Effect.Effect<Array<Post>, DatabaseError>;
+    readonly getById: (
+      id: string
+    ) => Effect.Effect<Post, PostNotFoundError | DatabaseError>;
+    readonly getByUserId: (
+      userId: string
+    ) => Effect.Effect<Array<Post>, DatabaseError>;
     readonly create: (
       input: CreatePostInput
-    ) => Effect.Effect<Post, ValidationError | UserNotFoundError>;
+    ) => Effect.Effect<
+      Post,
+      ValidationError | UserNotFoundError | DatabaseError
+    >;
     readonly update: (
       id: string,
       input: UpdatePostInput
-    ) => Effect.Effect<Post, PostNotFoundError | ValidationError>;
-    readonly delete: (id: string) => Effect.Effect<void, PostNotFoundError>;
+    ) => Effect.Effect<Post, PostNotFoundError | ValidationError | DatabaseError>;
+    readonly delete: (
+      id: string
+    ) => Effect.Effect<void, PostNotFoundError | DatabaseError>;
   }
 >() {}
 
-// In-memory storage implementation
+// Database-backed implementation
 class PostServiceLive {
-  private posts: Map<string, Post> = new Map();
-  private idCounter = 1;
+  getAll = Effect.gen(function* () {
+    const { db } = yield* DatabaseService;
 
-  getAll = Effect.sync(() => {
-    // Return posts sorted by createdAt descending (newest first)
-    return Array.from(this.posts.values()).sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-    );
+    const result = yield* Effect.tryPromise({
+      try: () => db.select().from(posts).orderBy(desc(posts.createdAt)),
+      catch: (error) => new DatabaseError({ message: String(error) }),
+    });
+
+    return result.map((dbPost) => ({
+      id: dbPost.id.toString(),
+      userId: dbPost.userId.toString(),
+      content: dbPost.content,
+      createdAt: dbPost.createdAt,
+      updatedAt: dbPost.updatedAt,
+    }));
   });
 
   getById = (id: string) =>
-    Effect.gen(this, function* () {
-      const post = this.posts.get(id);
-      if (!post) {
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseService;
+
+      const numId = parseInt(id, 10);
+      if (isNaN(numId)) {
         return yield* Effect.fail(new PostNotFoundError({ id }));
       }
-      return post;
+
+      const result = yield* Effect.tryPromise({
+        try: () => db.select().from(posts).where(eq(posts.id, numId)).limit(1),
+        catch: (error) => new DatabaseError({ message: String(error) }),
+      });
+
+      const dbPost = result[0];
+      if (!dbPost) {
+        return yield* Effect.fail(new PostNotFoundError({ id }));
+      }
+
+      return {
+        id: dbPost.id.toString(),
+        userId: dbPost.userId.toString(),
+        content: dbPost.content,
+        createdAt: dbPost.createdAt,
+        updatedAt: dbPost.updatedAt,
+      };
     });
 
   getByUserId = (userId: string) =>
-    Effect.sync(() => {
-      // Return user's posts sorted by createdAt descending (newest first)
-      return Array.from(this.posts.values())
-        .filter((p) => p.userId === userId)
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseService;
+
+      const numUserId = parseInt(userId, 10);
+      if (isNaN(numUserId)) {
+        return [];
+      }
+
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          db
+            .select()
+            .from(posts)
+            .where(eq(posts.userId, numUserId))
+            .orderBy(desc(posts.createdAt)),
+        catch: (error) => new DatabaseError({ message: String(error) }),
+      });
+
+      return result.map((dbPost) => ({
+        id: dbPost.id.toString(),
+        userId: dbPost.userId.toString(),
+        content: dbPost.content,
+        createdAt: dbPost.createdAt,
+        updatedAt: dbPost.updatedAt,
+      }));
     });
 
   create = (input: CreatePostInput) =>
-    Effect.gen(this, function* () {
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseService;
+
       // Validation
       if (!input.content || input.content.trim().length === 0) {
         return yield* Effect.fail(
@@ -76,23 +137,41 @@ class PostServiceLive {
       const userService = yield* UserService;
       yield* userService.getById(input.userId);
 
-      const id = (this.idCounter++).toString();
-      const now = new Date();
-      const post: Post = {
-        id,
-        userId: input.userId,
-        content: input.content,
-        createdAt: now,
-        updatedAt: now,
-      };
+      const numUserId = parseInt(input.userId, 10);
 
-      this.posts.set(id, post);
-      return post;
+      // Insert new post
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          db
+            .insert(posts)
+            .values({
+              userId: numUserId,
+              content: input.content,
+            })
+            .returning(),
+        catch: (error) => new DatabaseError({ message: String(error) }),
+      });
+
+      const dbPost = result[0];
+
+      return {
+        id: dbPost.id.toString(),
+        userId: dbPost.userId.toString(),
+        content: dbPost.content,
+        createdAt: dbPost.createdAt,
+        updatedAt: dbPost.updatedAt,
+      };
     });
 
   update = (id: string, input: UpdatePostInput) =>
-    Effect.gen(this, function* () {
-      const post = yield* this.getById(id);
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseService;
+
+      // Validate ID
+      const numId = parseInt(id, 10);
+      if (isNaN(numId)) {
+        return yield* Effect.fail(new PostNotFoundError({ id }));
+      }
 
       // Validation
       if (input.content !== undefined) {
@@ -111,32 +190,71 @@ class PostServiceLive {
         }
       }
 
-      const updatedPost: Post = {
-        ...post,
-        content: input.content ?? post.content,
-        updatedAt: new Date(),
-      };
+      // Check if post exists
+      yield* this.getById(id);
 
-      this.posts.set(id, updatedPost);
-      return updatedPost;
+      // Update post
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          db
+            .update(posts)
+            .set({
+              content: input.content,
+              updatedAt: new Date(),
+            })
+            .where(eq(posts.id, numId))
+            .returning(),
+        catch: (error) => new DatabaseError({ message: String(error) }),
+      });
+
+      const dbPost = result[0];
+
+      return {
+        id: dbPost.id.toString(),
+        userId: dbPost.userId.toString(),
+        content: dbPost.content,
+        createdAt: dbPost.createdAt,
+        updatedAt: dbPost.updatedAt,
+      };
     });
 
   delete = (id: string) =>
-    Effect.gen(this, function* () {
-      const post = yield* this.getById(id);
-      this.posts.delete(id);
+    Effect.gen(function* () {
+      const { db } = yield* DatabaseService;
+
+      // Validate ID
+      const numId = parseInt(id, 10);
+      if (isNaN(numId)) {
+        return yield* Effect.fail(new PostNotFoundError({ id }));
+      }
+
+      // Check if post exists
+      yield* this.getById(id);
+
+      // Delete post
+      yield* Effect.tryPromise({
+        try: () => db.delete(posts).where(eq(posts.id, numId)),
+        catch: (error) => new DatabaseError({ message: String(error) }),
+      });
     });
 }
 
-// Create the service layer
-export const PostServiceLiveLayer = Layer.sync(PostService, () => {
-  const service = new PostServiceLive();
-  return {
-    getAll: service.getAll,
-    getById: service.getById,
-    getByUserId: service.getByUserId,
-    create: service.create,
-    update: service.update,
-    delete: service.delete,
-  };
-});
+// Create the service layer (depends on DatabaseService and UserService)
+export const PostServiceLive = Layer.effect(
+  PostService,
+  Effect.gen(function* () {
+    // Ensure dependencies are available
+    yield* DatabaseService;
+    yield* UserService;
+
+    const service = new PostServiceLive();
+    return {
+      getAll: service.getAll,
+      getById: service.getById,
+      getByUserId: service.getByUserId,
+      create: service.create,
+      update: service.update,
+      delete: service.delete,
+    };
+  })
+);

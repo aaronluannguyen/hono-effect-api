@@ -1,12 +1,17 @@
 import { Hono } from "hono";
 import { Effect, Runtime, Layer } from "effect";
-import { UserService, UserServiceLiveLayer } from "./services/UserService";
-import { PostService, PostServiceLiveLayer } from "./services/PostService";
+import {
+  DatabaseService,
+  DatabaseServiceLive,
+} from "./services/DatabaseService";
+import { UserService, UserServiceLive } from "./services/UserService";
+import { PostService, PostServiceLive } from "./services/PostService";
 import {
   UserNotFoundError,
   UserAlreadyExistsError,
   PostNotFoundError,
   ValidationError,
+  DatabaseError,
 } from "./errors";
 import type {
   CreateUserInput,
@@ -15,16 +20,22 @@ import type {
   UpdatePostInput,
 } from "./types";
 
-// Create a runtime with our services
+// Create a runtime with all service layers
+// PostService depends on UserService, both depend on DatabaseService
 const runtime = Effect.runSync(
   Effect.scoped(
-    Runtime.make(Layer.merge(UserServiceLiveLayer, PostServiceLiveLayer))
+    Runtime.make(
+      Layer.provide(
+        Layer.merge(UserServiceLive, PostServiceLive),
+        DatabaseServiceLive
+      )
+    )
   )
 );
 
 // Helper function to run Effect programs and handle errors
 async function runEffect<A, E>(
-  effect: Effect.Effect<A, E, UserService | PostService>
+  effect: Effect.Effect<A, E, UserService | PostService | DatabaseService>
 ): Promise<{ success: true; data: A } | { success: false; error: E }> {
   const result = await Runtime.runPromiseEither(runtime)(effect);
 

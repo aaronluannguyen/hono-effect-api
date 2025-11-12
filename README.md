@@ -5,6 +5,8 @@ A Twitter-like REST API built with:
 - **Hono** - Fast, lightweight web framework
 - **Bun** - JavaScript runtime and package manager
 - **Effect** - Powerful functional programming library for managing effects
+- **Drizzle ORM** - Type-safe database ORM
+- **PostgreSQL** - Relational database
 
 ## Features
 
@@ -12,18 +14,36 @@ A Twitter-like REST API built with:
 - Effect-based error handling
 - Type-safe API with TypeScript
 - Service layer pattern with dependency injection
-- In-memory storage (easily replaceable with a database)
+- PostgreSQL database with Drizzle ORM
+- Database connection management through Effect layers
 - Twitter-like features (280 character limit, user posts feed)
+- Type-safe database queries and migrations
 
 ## Prerequisites
 
 - [Bun](https://bun.sh/) installed on your system
+- [PostgreSQL](https://www.postgresql.org/) installed and running
+- PostgreSQL database created (default: `hono_effect_db`)
 
 ## Installation
 
 ```bash
 # Install dependencies
 bun install
+
+# Copy environment variables
+cp .env.example .env
+
+# Edit .env with your database credentials
+# DB_HOST=localhost
+# DB_PORT=5432
+# DB_USER=postgres
+# DB_PASSWORD=postgres
+# DB_NAME=hono_effect_db
+
+# Generate and run database migrations
+bun run db:generate
+bun run db:migrate
 ```
 
 ## Running the API
@@ -40,6 +60,11 @@ bun run build
 
 # Type checking
 bun run typecheck
+
+# Database commands
+bun run db:generate    # Generate migration files from schema
+bun run db:migrate     # Run pending migrations
+bun run db:studio      # Open Drizzle Studio (database GUI)
 ```
 
 The API will start on `http://localhost:3000`
@@ -159,9 +184,14 @@ src/
 ├── index.ts              # Main application entry point with Hono routes
 ├── types.ts              # TypeScript type definitions
 ├── errors.ts             # Effect-based error types
+├── db/
+│   ├── schema.ts         # Drizzle ORM schema definitions
+│   ├── connection.ts     # Database connection setup
+│   └── migrate.ts        # Migration runner script
 └── services/
-    ├── UserService.ts    # User service with Effect-based operations
-    └── PostService.ts    # Post service with Effect-based operations
+    ├── DatabaseService.ts # Database connection service (Effect layer)
+    ├── UserService.ts     # User service with Drizzle operations
+    └── PostService.ts     # Post service with Drizzle operations
 ```
 
 ## Data Models
@@ -197,19 +227,30 @@ src/
 This project demonstrates several EffectTS patterns:
 
 1. **Effect Services**: Using `Context.Tag` to define services with dependency injection
-2. **Error Handling**: Tagged errors (`UserNotFoundError`, `PostNotFoundError`, `ValidationError`) for type-safe error handling
+2. **Error Handling**: Tagged errors (`UserNotFoundError`, `PostNotFoundError`, `ValidationError`, `DatabaseError`) for type-safe error handling
 3. **Effect Programs**: Using `Effect.gen` for imperative-style effect composition
-4. **Layer System**: Service layers for providing implementations
+4. **Layer System**: Service layers for providing implementations with proper dependency management
 5. **Runtime**: Creating and using Effect runtimes to execute programs
-6. **Service Composition**: PostService depends on UserService to verify users exist
+6. **Service Composition**: PostService depends on UserService; both depend on DatabaseService
+7. **Resource Management**: DatabaseService manages connection lifecycle with automatic cleanup
 
 ### Service Pattern
 
-Each service (`UserService`, `PostService`) is defined as an Effect service with:
+Each service (`DatabaseService`, `UserService`, `PostService`) is defined as an Effect service with:
 - Clear interface definition using `Context.Tag`
 - Implementation separated in a Layer
 - All operations return `Effect` types for composability
 - Type-safe error handling with union types
+- Explicit dependency declarations through Effect layers
+
+### Database Integration
+
+The database layer demonstrates Effect's resource management:
+- **DatabaseService**: Manages PostgreSQL connection pool as an Effect service
+- **Layer Composition**: `Layer.provide()` ensures DatabaseService is available to dependent services
+- **Connection Lifecycle**: Automatic cleanup when the Effect scope ends
+- **Type-Safe Queries**: Drizzle ORM provides end-to-end type safety
+- **Error Handling**: Database errors wrapped in `Effect.tryPromise` for composable error handling
 
 ### Hono Integration
 
@@ -246,22 +287,26 @@ Each route:
 
 To extend this API, you could:
 
-1. **Add a Database**: Replace in-memory storage with PostgreSQL, MongoDB, etc.
-2. **Add Authentication**: Implement JWT or session-based auth with Effect
-3. **Add Followers/Following**: Implement Twitter-like social graph
-4. **Add Likes/Retweets**: Add engagement features for posts
-5. **Add Pagination**: Implement cursor-based or offset pagination
-6. **Add Search**: Full-text search for users and posts
-7. **Add Validation**: Use Effect Schema for schema validation
-8. **Add Logging**: Integrate Effect's logging capabilities
-9. **Add Testing**: Write tests using Effect's testing utilities
-10. **Add Media Support**: Allow image uploads for posts
+1. **Add Authentication**: Implement JWT or session-based auth with Effect
+2. **Add Followers/Following**: Implement Twitter-like social graph
+3. **Add Likes/Retweets**: Add engagement features for posts
+4. **Add Pagination**: Implement cursor-based or offset pagination for large datasets
+5. **Add Search**: Full-text search for users and posts using PostgreSQL features
+6. **Add Schema Validation**: Use Effect Schema or Zod for runtime input validation
+7. **Add Logging**: Integrate Effect's logging capabilities for observability
+8. **Add Testing**: Write tests using Effect's testing utilities and Drizzle's test helpers
+9. **Add Media Support**: Allow image uploads for posts with cloud storage
+10. **Add Caching**: Implement Redis caching layer for frequently accessed data
+11. **Add Database Indexes**: Optimize query performance with proper indexes
+12. **Add Connection Pooling**: Fine-tune PostgreSQL connection pool settings
 
 ## Resources
 
 - [Hono Documentation](https://hono.dev/)
 - [Effect Documentation](https://effect.website/)
 - [Bun Documentation](https://bun.sh/docs)
+- [Drizzle ORM Documentation](https://orm.drizzle.team/)
+- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
 - [TypeScript Documentation](https://www.typescriptlang.org/)
 
 ## License
