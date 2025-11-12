@@ -103,7 +103,8 @@ src/
 ├── types.ts                 # TypeScript interfaces and types
 ├── errors.ts                # Effect tagged errors
 └── services/
-    └── TodoService.ts       # Effect service with business logic
+    ├── UserService.ts       # User service with business logic
+    └── PostService.ts       # Post service with business logic
 ```
 
 ### File Responsibilities
@@ -167,11 +168,15 @@ The current implementation uses a single runtime:
 ```typescript
 // Create runtime once at app startup
 const runtime = Effect.runSync(
-  Effect.scoped(Runtime.make(TodoServiceLiveLayer))
+  Effect.scoped(
+    Runtime.make(Layer.merge(UserServiceLiveLayer, PostServiceLiveLayer))
+  )
 );
 
 // Helper to run programs
-async function runEffect<A, E>(effect: Effect.Effect<A, E, TodoService>) {
+async function runEffect<A, E>(
+  effect: Effect.Effect<A, E, UserService | PostService>
+) {
   const result = await Runtime.runPromiseEither(runtime)(effect);
   // Returns Either type for error handling
 }
@@ -183,11 +188,11 @@ All errors are typed in the Effect signature:
 
 ```typescript
 // Method signature shows possible errors
-readonly getById: (id: string) => Effect.Effect<Todo, TodoNotFoundError>;
+readonly getById: (id: string) => Effect.Effect<User, UserNotFoundError>;
 
 // Multiple errors use union types
-readonly update: (id: string, input: UpdateTodoInput) =>
-  Effect.Effect<Todo, TodoNotFoundError | ValidationError>;
+readonly create: (input: CreatePostInput) =>
+  Effect.Effect<Post, ValidationError | UserNotFoundError>;
 ```
 
 ## Development Commands
@@ -235,7 +240,7 @@ bun run typecheck    # Type checking
    ```typescript
    const runtime = Effect.runSync(
      Effect.scoped(Runtime.make(
-       Layer.merge(TodoServiceLiveLayer, ResourceServiceLiveLayer)
+       Layer.mergeAll(UserServiceLiveLayer, PostServiceLiveLayer, ResourceServiceLiveLayer)
      ))
    );
    ```
@@ -287,13 +292,13 @@ complexOperation = (id: string) =>
 ```typescript
 // Services can depend on other services
 const program = Effect.gen(function* () {
-  const todoService = yield* TodoService;
   const userService = yield* UserService;
+  const postService = yield* PostService;
 
-  const todo = yield* todoService.getById("1");
-  const user = yield* userService.getById(todo.userId);
+  const user = yield* userService.getById("1");
+  const posts = yield* postService.getByUserId(user.id);
 
-  return { todo, user };
+  return { user, posts };
 });
 ```
 
@@ -335,18 +340,22 @@ When adding tests:
 
 ```typescript
 // Example test structure (when implementing tests)
-describe("TodoService", () => {
-  it("should create a todo", async () => {
+describe("UserService", () => {
+  it("should create a user", async () => {
     const program = Effect.gen(function* () {
-      const service = yield* TodoService;
-      return yield* service.create({ title: "Test", description: "Test" });
+      const service = yield* UserService;
+      return yield* service.create({
+        username: "testuser",
+        email: "test@example.com",
+        displayName: "Test User"
+      });
     });
 
     const result = await Effect.runPromise(
-      program.pipe(Effect.provide(TodoServiceLiveLayer))
+      program.pipe(Effect.provide(UserServiceLiveLayer))
     );
 
-    expect(result.title).toBe("Test");
+    expect(result.username).toBe("testuser");
   });
 });
 ```
@@ -358,22 +367,22 @@ describe("TodoService", () => {
 Replace in-memory storage:
 
 ```typescript
-class TodoServiceLive {
+class UserServiceLive {
   constructor(private db: DatabaseConnection) {}
 
   getById = (id: string) =>
     Effect.gen(this, function* () {
       // Use Effect.tryPromise for async operations
-      const todo = yield* Effect.tryPromise({
-        try: () => this.db.query("SELECT * FROM todos WHERE id = ?", [id]),
+      const user = yield* Effect.tryPromise({
+        try: () => this.db.query("SELECT * FROM users WHERE id = ?", [id]),
         catch: (error) => new DatabaseError({ message: String(error) })
       });
 
-      if (!todo) {
-        return yield* Effect.fail(new TodoNotFoundError({ id }));
+      if (!user) {
+        return yield* Effect.fail(new UserNotFoundError({ id }));
       }
 
-      return todo;
+      return user;
     });
 }
 ```
