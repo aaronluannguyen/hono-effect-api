@@ -63,6 +63,204 @@ DB_PASSWORD=postgres
 DB_NAME=hono_effect_db
 ```
 
+### Alternative: Connection String Configuration
+
+For hosted PostgreSQL providers (PlanetScale, Neon, Supabase, etc.), use a connection string instead:
+
+```typescript
+// drizzle.config.ts
+import { defineConfig } from "drizzle-kit";
+
+export default defineConfig({
+  schema: "./src/db/schema.ts",
+  out: "./drizzle",
+  dialect: "postgresql",
+  dbCredentials: {
+    url: process.env.DATABASE_URL,  // Connection string
+  },
+});
+```
+
+```bash
+# .env
+DATABASE_URL=postgresql://user:password@host:port/database
+```
+
+## Hosted PostgreSQL Providers
+
+### PlanetScale for PostgreSQL
+
+**Important:** PlanetScale's PostgreSQL offering uses a **different workflow** than their MySQL (Vitess) offering.
+
+#### Key Differences: PlanetScale MySQL vs PostgreSQL
+
+| Feature | MySQL (Vitess) | PostgreSQL |
+|---------|----------------|------------|
+| Database branching | Development workflow | Backup restore only |
+| Deploy requests | ✅ Yes | ❌ No |
+| Automatic schema merging | ✅ Yes | ❌ No |
+| Migration files | Optional (can use schema push) | **Required** |
+| Workflow | Schema push or migrations | **Traditional migrations only** |
+
+#### PlanetScale Postgres Configuration
+
+```typescript
+// drizzle.config.ts
+import { defineConfig } from "drizzle-kit";
+
+export default defineConfig({
+  schema: "./src/db/schema.ts",
+  out: "./drizzle",
+  dialect: "postgresql",
+  dbCredentials: {
+    url: process.env.DATABASE_URL,  // PlanetScale connection string
+  },
+});
+```
+
+```bash
+# .env
+# Get from PlanetScale dashboard
+DATABASE_URL=postgresql://user:password@aws.connect.psdb.cloud/database
+```
+
+#### PlanetScale Postgres Branching
+
+Branches in PlanetScale Postgres work differently than MySQL:
+
+- **Created from backups** - Full schema and data snapshot
+- **No automatic schema sync** - Changes must be manually applied to each branch
+- **No deploy requests** - Use traditional migration workflow
+- **Best for:** Testing with production data, experiments, performance testing
+- **Not for:** Automatic schema deployment (like MySQL version)
+
+#### Schema Change Workflow with PlanetScale Postgres
+
+```bash
+# 1. Optional: Create a branch for testing (via PlanetScale dashboard)
+#    Branches are created from backups, not for schema deployment
+
+# 2. Update schema locally
+# Edit src/db/schema.ts
+
+# 3. Generate migration
+bun run db:generate
+
+# 4. Review generated SQL
+cat drizzle/XXXX_*.sql
+
+# 5. Apply to development/staging branch (if using)
+DATABASE_URL=<dev-branch-url> bun run db:migrate
+
+# 6. Test your application
+DATABASE_URL=<dev-branch-url> bun run dev
+
+# 7. Apply to production database
+DATABASE_URL=<production-url> bun run db:migrate
+
+# 8. Deploy application code
+```
+
+**Important Notes:**
+- Migration files are **required** - you cannot use `drizzle-kit push` in production
+- Schema changes must be **manually applied** to each branch
+- No automatic merge from development to production branches
+- Use the same traditional migration workflow as any PostgreSQL database
+
+### Other PostgreSQL Providers
+
+#### Neon (PostgreSQL with Advanced Branching)
+
+Neon offers Git-like branching with better schema workflow support:
+
+- ✅ Instant database branches
+- ✅ Branch from any point in time
+- ✅ Copy-on-write (very fast)
+- ✅ Supports traditional migrations
+- ⚠️ Still requires manual migration application per branch
+
+```bash
+# Install Neon CLI
+npm i -g neonctl
+
+# Create a branch
+neonctl branches create --project-id <project-id> add-comments
+
+# Get connection string
+neonctl connection-string <branch-name>
+
+# Apply migrations to branch
+DATABASE_URL=<branch-url> bun run db:migrate
+
+# Test
+DATABASE_URL=<branch-url> bun run dev
+
+# Apply to production
+DATABASE_URL=<main-url> bun run db:migrate
+```
+
+#### Supabase
+
+- ✅ Branching (beta)
+- ✅ Built-in Auth, Storage, Realtime
+- ✅ Dashboard and Studio
+- ✅ Supports traditional migrations
+
+```bash
+# Via Supabase CLI
+supabase db push
+```
+
+#### Render, Railway, Vercel Postgres
+
+Standard PostgreSQL hosting without branching:
+
+- Use environment-based databases (dev, staging, production)
+- Traditional migration workflow
+- Simple and reliable
+
+```bash
+# Standard workflow
+bun run db:generate
+bun run db:migrate  # Apply to each environment separately
+```
+
+### Recommended Provider Workflow
+
+| Provider | Configuration | Branching | Best Workflow |
+|----------|--------------|-----------|---------------|
+| **PlanetScale Postgres** | Connection string | Backup-based | Traditional migrations |
+| **Neon** | Connection string | Instant branches | Migrations + branch testing |
+| **Supabase** | Connection string | Beta branching | Migrations or CLI |
+| **Render/Railway** | Connection string | No (use environments) | Traditional migrations |
+| **Local/Self-hosted** | Host/Port/User/Pass | No | Traditional migrations |
+
+### Multi-Environment Setup
+
+For any provider, manage multiple environments with separate connection strings:
+
+```bash
+# .env.development
+DATABASE_URL=postgresql://user:pass@dev-host/db
+
+# .env.staging
+DATABASE_URL=postgresql://user:pass@staging-host/db
+
+# .env.production
+DATABASE_URL=postgresql://user:pass@prod-host/db
+```
+
+```json
+// package.json - Add environment-specific scripts
+{
+  "scripts": {
+    "db:migrate": "bun run src/db/migrate.ts",
+    "db:migrate:staging": "NODE_ENV=staging bun run src/db/migrate.ts",
+    "db:migrate:production": "NODE_ENV=production bun run src/db/migrate.ts"
+  }
+}
+```
+
 ## Schema Update Process
 
 ### Step-by-Step Workflow
